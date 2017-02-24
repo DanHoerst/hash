@@ -1,7 +1,9 @@
 import hashlib
+import logging
 import os
 import sqlite3
 from flask import abort, Flask, g, jsonify, request
+from logging.handlers import RotatingFileHandler
 
 app = Flask(__name__)
 
@@ -11,9 +13,17 @@ app.config.update(dict(
     PASSWORD=os.getenv("DB_PASSWORD", "default")
 ))
 
+# Handle logging to file and log rotation
+handler = RotatingFileHandler("/var/log/hash.log", maxBytes=10000, backupCount=3)
+handler.setLevel(logging.DEBUG)
+for logger in [logging.getLogger('werkzeug'), app.logger]:
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+
 
 def connect_db():
     """Connects to the specific database."""
+    app.logger.info("Connecting to the database")
     rv = sqlite3.connect(app.config["DATABASE"])
     rv.row_factory = sqlite3.Row
     return rv
@@ -21,6 +31,7 @@ def connect_db():
 
 def init_db():
     """Initializes the database."""
+    app.logger.info("Initializing the database")
     db = get_db()
     with app.open_resource("schema.sql", mode="r") as f:
         db.cursor().executescript(f.read())
@@ -31,7 +42,7 @@ def init_db():
 def initdb_command():
     """Creates the database tables."""
     init_db()
-    print "Initialized the database."
+    app.logger.info("Initialized the database")
 
 
 def get_db():
@@ -48,7 +59,7 @@ def save_hash(sha_hash, message):
     db = get_db()
     db.execute("insert into hashes(hash, message) values (?, ?)", [sha_hash, message])
     db.commit()
-    print "Hash was saved."
+    app.logger.info("Hash was saved")
 
 
 def fetch_hash(q, q_type):
@@ -67,9 +78,11 @@ def create_hash():
     to_hash = data["message"]
     results = fetch_hash(to_hash, "message")
     if not results:
+        app.logger.info("Hash not found in database")
         sha_hash = hashlib.sha256(to_hash).hexdigest()
         save_hash(sha_hash, to_hash)
     else:
+        app.logger.info("Hash found in database")
         sha_hash = results[0][0]
     return jsonify({"digest": sha_hash})
 
@@ -79,11 +92,13 @@ def check_hash(sha_hash):
     """Returns the message for a given hash if it has been stored in the db. Otherwise, 404s"""
     message = fetch_hash(sha_hash, "hash")
     if message:
-        return jsonify({"meesage": message[0][1]})
+        app.logger.info("Hash exists")
+        return jsonify({"message": message[0][1]})
     else:
+        app.logger.error("Hash does not exist")
         return abort(404)
 
 if __name__ == "__main__":
     site_address = os.getenv("SITE_ADDRESS", "localhost")
-    context = ("%s.crt" % site_address, "%s.key" % site_address)
-    app.run(host='0.0.0.0', port=443, ssl_context=context, threaded=True)
+    context = ("/etc/%s.crt" % site_address, "/etc/%s.key" % site_address)
+    app.run(host='0.0.0.0', port=443, ssl_context=context, threaded=True, use_reloader=True)
